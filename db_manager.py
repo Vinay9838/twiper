@@ -51,6 +51,11 @@ class DBManager:
 			return c.fetchone() is not None
 
 	def mark_posted(self, source: str, handle: Optional[str], name: Optional[str], tweet_id: Optional[str]) -> None:
+		# Sanitize inputs to avoid non-serializable types (e.g., dicts)
+		if not isinstance(handle, (str, type(None))):
+			handle = None
+		if not isinstance(name, (str, type(None))):
+			name = None
 		with self._lock, self._connect() as conn:
 			c = conn.cursor()
 			try:

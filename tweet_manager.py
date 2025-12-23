@@ -3,6 +3,8 @@ import asyncio
 import glob
 import os
 import logging
+import sys
+import datetime
 from typing import List, Optional
 
 from dotenv import load_dotenv
@@ -241,6 +243,24 @@ async def main():
 	# Configure logging level and format
 	level = (os.getenv("LOG_LEVEL") or "INFO").upper()
 	logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+	# Optional guard: if scheduled hourly on Fly, only run every N hours
+	run_every = os.getenv("RUN_EVERY_HOURS")
+	if run_every:
+		try:
+			n = max(1, int(run_every))
+		except ValueError:
+			n = 0
+		if n >= 2:
+			offset = 0
+			try:
+				offset = int(os.getenv("RUN_OFFSET_HOURS") or 0) % n
+			except ValueError:
+				offset = 0
+			hour = datetime.datetime.utcnow().hour
+			if hour % n != offset:
+				logging.info("Skipping run due to RUN_EVERY_HOURS guard: utc_hour=%d n=%d offset=%d", hour, n, offset)
+				return
 
 	manager = XTweetManager()
 	# Read post limit from environment: prefer X_POST_LIMIT, fallback POST_LIMIT

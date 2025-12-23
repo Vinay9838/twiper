@@ -1,0 +1,15 @@
+# fly.toml app configuration file for Twiper
+
+app = "twiper"
+primary_region = "iad" # change to your preferred region
+
+[build]
+
+[env]
+  LOG_LEVEL = "INFO"
+
+[processes]
+  job = "python tweet_manager.py"
+
+# No services defined (one-shot job, not a web server)
+# Use Fly Machines cron schedules to run this process on a cadence.

@@ -330,9 +330,9 @@ class MegaManager:
 				handle = getattr(node, "h", None)
 		except Exception:
 			pass
-		# If we have neither, just return the node and let delete() try its best
+		# If we have neither, return an empty tuple; callers should treat as unknown
 		if not handle and not name:
-			return node
+			return (None, None)
 		return (handle or "", name or "")
 
 

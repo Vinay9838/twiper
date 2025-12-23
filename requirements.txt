@@ -4,4 +4,3 @@ oauthlib>=3.2.2
 mega.py>=1.0.8
 requests>=2.31.0
 pycryptodome>=3.19.0
-tenacity>=8.2.3
