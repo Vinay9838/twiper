@@ -1,0 +1,21 @@
+# Ignore files not needed in Docker build context
+
+# VCS
+.git
+.gitignore
+
+# Python caches and artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environments and IDEs
+.env
+.venv/
+.vscode/
+.idea/
+.DS_Store
+
+# Data: ignore all except caption.txt
+data/*
+!data/caption.txt

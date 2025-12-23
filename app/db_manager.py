@@ -3,11 +3,14 @@ import sqlite3
 import threading
 import time
 from typing import Optional
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 class DBManager:
-	def __init__(self, db_path: str = "data/twiper.db"):
+	def __init__(self, db_path: str = BASE_DIR / "twiper.db"):
 		self.db_path = db_path
-		os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+		# os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 		self._lock = threading.Lock()
 		self._init_schema()
 

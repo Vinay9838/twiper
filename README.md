@@ -81,7 +81,7 @@ DB_PATH=data/twiper.db
 ```bash
 . .venv/bin/activate
 export X_USE_MEGA=true
-python tweet_manager.py
+python -m app.tweet_manager
 ```
 
 - Post from local `data/` folder:
@@ -90,7 +90,7 @@ python tweet_manager.py
 . .venv/bin/activate
 export X_USE_MEGA=false
 export X_POST_LIMIT=2  # number of tweets to post in one run
-python tweet_manager.py
+python -m app.tweet_manager
 ```
 
 ## Data Folder Conventions
@@ -126,10 +126,10 @@ export LOG_LEVEL=DEBUG
 
 ## Files
 
-- `tweet_manager.py` — Orchestrates posting, local and MEGA flows
-- `media_manager.py` — OAuth1-signed video upload (INIT/APPEND/FINALIZE/STATUS)
-- `mega_manager.py` — MEGA login/list/download/delete + progress bar
-- `db_manager.py` — SQLite wrapper for posted-media tracking
+- `app/tweet_manager.py` — Orchestrates posting, local and MEGA flows
+- `app/media_manager.py` — OAuth1-signed video upload (INIT/APPEND/FINALIZE/STATUS)
+- `app/mega_manager.py` — MEGA login/list/download/delete + progress bar
+- `app/db_manager.py` — SQLite wrapper for posted-media tracking
 - `requirements.txt` — Project dependencies
 - `.gitignore` — Ignore `data/*` except `data/.gitkeep`, plus common Python artifacts
 

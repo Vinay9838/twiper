@@ -5,25 +5,36 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-WORKDIR /app
+WORKDIR /appsrc
 
-# System deps for building wheels (e.g., pycryptodome)
+# System deps (build + cron)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        cron \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps
 COPY requirements.txt ./
-RUN pip install -r requirements.txt \
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip install -r requirements.txt \
     && pip install "tenacity>=8.2.3"
 
 # App source
-COPY tweet_manager.py media_manager.py mega_manager.py db_manager.py ./
-COPY data/.gitkeep ./data/.gitkeep
-COPY data/caption.txt ./data/caption.txt
+COPY app/ ./app/
+COPY job.py ./job.py
 
-# Default logging level; override via env
+# Data (copy entire folder; safe even if only caption.txt exists)
+COPY data/ ./data/
+
+# Cron config
+COPY crontab /etc/cron.d/app-cron
+RUN chmod 0644 /etc/cron.d/app-cron \
+    && crontab /etc/cron.d/app-cron \
+    && touch /var/log/cron.log
+
+# Default logging level
 ENV LOG_LEVEL=INFO
 
-# One-shot job entry (runs then exits)
-CMD ["python", "tweet_manager.py"]
+# Run cron in foreground
+CMD ["cron", "-f"]

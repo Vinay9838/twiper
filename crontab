@@ -1,0 +1,4 @@
+# run every 4 hours
+
+0 */4 * * * python /appsrc/job.py >> /var/log/cron.log 2>&1
+
