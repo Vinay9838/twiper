@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# Local environment variables
+.env
+
+# Data directory: ignore everything except the keep file
+data/*
+!data/.gitkeep
