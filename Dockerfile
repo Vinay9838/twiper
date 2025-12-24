@@ -24,6 +24,9 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 COPY app/ ./app/
 COPY job.py ./job.py
 
+COPY run_job.sh /appsrc/run_job.sh
+RUN chmod +x /appsrc/run_job.sh
+
 # Data (copy entire folder; safe even if only caption.txt exists)
 COPY data/ ./data/
 
@@ -36,5 +39,7 @@ RUN chmod 0644 /etc/cron.d/app-cron \
 # Default logging level
 ENV LOG_LEVEL=INFO
 
-# Run cron in foreground
-CMD ["cron", "-f"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]

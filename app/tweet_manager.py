@@ -21,21 +21,38 @@ class XTweetManager:
 		load_dotenv()
 		self.logger = logging.getLogger(__name__)
 
+		# Resolve credentials from common environment aliases
+		def _get_env_any(*keys: str) -> Optional[str]:
+			for k in keys:
+				v = os.getenv(k)
+				if v:
+					return v
+			return None
+
+		self._api_key = _get_env_any("X_API_KEY", "TWITTER_API_KEY", "CONSUMER_KEY")
+		self._api_secret = _get_env_any("X_API_SECRET", "TWITTER_API_SECRET", "CONSUMER_SECRET")
+		self._access_token = _get_env_any("X_ACCESS_TOKEN", "TWITTER_ACCESS_TOKEN")
+		self._access_secret = _get_env_any("X_ACCESS_SECRET", "TWITTER_ACCESS_SECRET")
+
+		missing = []
+		if not self._api_key:
+			missing.append("API key")
+		if not self._api_secret:
+			missing.append("API secret")
+		if not self._access_token:
+			missing.append("Access token")
+		if not self._access_secret:
+			missing.append("Access secret")
+		if missing:
+			raise RuntimeError(f"Missing OAuth credentials: {', '.join(missing)}")
+
 		self.client = Client(
-			client_key=os.getenv("X_API_KEY"),
-			client_secret=os.getenv("X_API_SECRET"),
-			resource_owner_key=os.getenv("X_ACCESS_TOKEN"),
-			resource_owner_secret=os.getenv("X_ACCESS_SECRET"),
+			client_key=self._api_key,
+			client_secret=self._api_secret,
+			resource_owner_key=self._access_token,
+			resource_owner_secret=self._access_secret,
 			signature_type="AUTH_HEADER",
 		)
-
-		if not all([
-			os.getenv("X_API_KEY"),
-			os.getenv("X_API_SECRET"),
-			os.getenv("X_ACCESS_TOKEN"),
-			os.getenv("X_ACCESS_SECRET"),
-		]):
-			raise RuntimeError("Missing OAuth credentials")
 
 		self.video_uploader = XVideoUploader()
 		self.mega = MegaManager()

@@ -14,6 +14,23 @@ Post tweets with text/images/videos from a local data folder or directly from yo
 - X (Twitter) developer app credentials
 - MEGA account (for MEGA flow)
 
+## Environment Variables
+
+Required for OAuth1 to X (Twitter): any of these aliases work.
+
+- X credentials:
+  - `X_API_KEY` | `TWITTER_API_KEY` | `CONSUMER_KEY`
+  - `X_API_SECRET` | `TWITTER_API_SECRET` | `CONSUMER_SECRET`
+  - `X_ACCESS_TOKEN` | `TWITTER_ACCESS_TOKEN`
+  - `X_ACCESS_SECRET` | `TWITTER_ACCESS_SECRET`
+
+Optional:
+- `X_USE_MEGA` (true/false)
+- `X_POST_LIMIT` (integer)
+- `DB_PATH` (SQLite path)
+- `LOG_LEVEL` (INFO/DEBUG)
+- MEGA: `MEGA_EMAIL`, `MEGA_PASSWORD`, `MEGA_DIR_NAME`, `MEGA_PUBLIC_URL`, `MEGA_HARD_DELETE`, `MEGA_PROGRESS_BAR`
+
 ## Setup
 
 ```bash
@@ -60,6 +77,31 @@ DB_PATH=data/twiper.db
 # Optional: post limit for local data/ flow
 # X_POST_LIMIT=3
 ```
+
+## Deployment (Fly.io + cron)
+
+This app runs a cron inside the container. Cron starts `run_job.sh`, which now sources the environment exported at container start.
+
+- Set secrets in Fly:
+
+```bash
+flyctl secrets set \
+  X_API_KEY=... \
+  X_API_SECRET=... \
+  X_ACCESS_TOKEN=... \
+  X_ACCESS_SECRET=... \
+  MEGA_EMAIL=... MEGA_PASSWORD=...
+```
+
+- Optional non-secret env in [env] of `fly.toml` (e.g., `LOG_LEVEL`, `X_POST_LIMIT`).
+- The entrypoint writes all env to `/etc/profile.d/container_env.sh` and `run_job.sh` sources it so jobs see secrets.
+- If you prefer, you can also define variables directly in `crontab` above the schedule lines (e.g., `X_POST_LIMIT=2`).
+
+Troubleshooting deployed env:
+- Exec into the machine and check PID 1 env: `cat /proc/1/environ | tr '\0' '\n'`
+- Verify the exported env file: `cat /etc/profile.d/container_env.sh`
+- Tail logs: `tail -f /var/log/cron.log`
+
 
 ## How It Works
 
