@@ -1,5 +1,6 @@
-# run every 3 hours
-
-* */3 * * * /appsrc/run_job.sh >> /var/log/cron.log 2>&1
+# run every 3 hours at minute 0
+# minute hour day month day-of-week
+# Use 0 for minutes so it runs once per matching hour.
+0 */3 * * * /appsrc/run_job.sh >> /var/log/cron.log 2>&1
 
 

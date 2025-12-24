@@ -7,7 +7,9 @@ from oauthlib.oauth1 import Client
 from urllib.parse import urlencode
 
 UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
-CHUNK_SIZE = 4 * 1024 * 1024  # 4MB
+# Use smaller chunk size to reduce peak memory during upload
+# Twitter supports chunked upload; smaller chunks mean more requests but lower memory footprint.
+CHUNK_SIZE = 1 * 1024 * 1024  # 1MB
 
 
 class XVideoUploader:
@@ -97,7 +99,13 @@ class XVideoUploader:
                     form.add_field("command", "APPEND")
                     form.add_field("media_id", media_id)
                     form.add_field("segment_index", str(segment_index))
-                    form.add_field("media", chunk)
+                    # Provide filename and a generic content type to avoid client-side body errors
+                    form.add_field(
+                        "media",
+                        chunk,
+                        filename=os.path.basename(path),
+                        content_type="application/octet-stream",
+                    )
 
                     async with session.post(
                         UPLOAD_URL,

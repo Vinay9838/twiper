@@ -11,7 +11,8 @@ from oauthlib.oauth1 import Client
 
 from app.media_manager import XVideoUploader, UPLOAD_URL
 from app.mega_manager import MegaManager
-from .db_manager import DBManager
+from app.json_db_manager import JsonDBManager
+from app.video_preprocessing import maybe_trim_video
 
 TWEETS_URL = "https://api.twitter.com/2/tweets"
 
@@ -56,7 +57,8 @@ class XTweetManager:
 
 		self.video_uploader = XVideoUploader()
 		self.mega = MegaManager()
-		self.db = DBManager(os.getenv("DB_PATH") or os.path.join("data", "twiper.db"))
+		# Use JSON-based tracker with default path (data/posted.json)
+		self.db = JsonDBManager()
 		self.logger.debug("XTweetManager initialized")
 
 	def sign_json(self, method: str, url: str) -> dict:
@@ -106,14 +108,28 @@ class XTweetManager:
 				json=payload,
 				headers=self.sign_json("POST", TWEETS_URL),
 			) as r:
-				r.raise_for_status()
-				resp = await r.json()
-				tweet_id = (resp.get("data") or {}).get("id")
+				# Avoid raising to allow graceful handling and better error diagnostics
+				status = r.status
+				text_body = None
+				try:
+					resp = await r.json()
+				except Exception:
+					resp = None
+					try:
+						text_body = await r.text()
+					except Exception:
+						text_body = None
+
+				if status >= 400:
+					self.logger.warning("Tweeting failed: status=%s resp=%s body=%s", status, resp, text_body)
+					return {"error": "tweet_failed", "status": status, "response": resp, "body": text_body}
+
+				tweet_id = (resp.get("data") or {}).get("id") if isinstance(resp, dict) else None
 				if tweet_id:
 					self.logger.info("Tweet created: id=%s", tweet_id)
 				else:
 					self.logger.info("Tweet created (no id in response)")
-				return resp
+				return resp or {}
 
 	async def post_from_dir(self, data_dir: str = "data") -> dict:
 		txt_files = sorted(glob.glob(os.path.join(data_dir, "*.txt")))
@@ -209,19 +225,33 @@ class XTweetManager:
 		return responses
 
 	async def post_video_from_mega(self, data_dir: str = "data") -> dict:
-		"""Download a video from MEGA, tweet it with caption, then delete from MEGA."""
+		"""Download a video from MEGA, tweet it with caption, then cleanup local file regardless of success."""
 		public_url = os.getenv("MEGA_PUBLIC_URL")
 		file_name = os.getenv("MEGA_FILE_NAME")
+		local_path: Optional[str] = None
+		node = None
 		# If MEGA_PUBLIC_URL provided, bypass DB uniqueness (we cannot enumerate)
 		if public_url:
 			local_path, node = self.mega.download_video(dest_dir=data_dir, file_name=None, public_url=public_url)
 			chosen_handle, chosen_name = None, None
 		else:
-			# Choose latest unposted video from the configured MEGA folder
-			candidates = self.mega.list_recent_videos()
+			# Ensure we have the latest posted list from MEGA
+			try:
+				self.db.sync_from_mega(self.mega)
+			except Exception:
+				self.logger.warning("Failed to sync posted.json from MEGA; continuing with local state", exc_info=True)
+
+			# Choose latest unposted video by filename from the configured MEGA folder
+			# Limit candidate enumeration to reduce memory; configurable via env
+			limit_env = os.getenv("X_MEGA_LIST_LIMIT") or os.getenv("MEGA_LIST_LIMIT")
+			try:
+				list_limit = int(limit_env) if limit_env else 50
+			except ValueError:
+				list_limit = 50
+			candidates = self.mega.list_recent_videos(limit=list_limit)
 			chosen = None
 			for handle, name, ts in candidates:
-				if not self.db.is_mega_posted(handle, name):
+				if not self.db.is_mega_posted(name):
 					chosen = (handle, name, ts)
 					break
 			if not chosen:
@@ -230,28 +260,48 @@ class XTweetManager:
 			self.logger.info("Selected MEGA video: handle=%s name=%s", chosen_handle, chosen_name)
 			local_path, node = self.mega.download_video(dest_dir=data_dir, file_name=chosen_name, public_url=None)
 
-		text = self._caption_for_media(local_path, data_dir)
-		media_id = await self.video_uploader.upload_video(local_path)
-		resp = await self.create_tweet(text=text, media_ids=[media_id])
-		tweet_id = (resp.get("data") or {}).get("id")
-
-		# Record as posted if we had a concrete MEGA selection
+		resp: dict = {}
+		tweet_id: Optional[str] = None
 		try:
-			if not public_url:
-				# Prefer actual handle/name from the downloaded node token
-				actual_handle, actual_name = self._extract_handle_name(node)
-				self.db.mark_mega_posted(actual_handle or chosen_handle, actual_name or chosen_name, tweet_id)
-		except Exception:
-			self.logger.warning("Failed to record MEGA post in DB", exc_info=True)
+			# Pre-process: trim to 2m20s if needed
+			local_path = maybe_trim_video(local_path, max_seconds=140, logger=self.logger)
+			# Validate media is a supported video before upload (avoid .json, etc.)
+			ext = os.path.splitext(local_path or "")[1].lower()
+			if not local_path or ext not in {".mp4"}:
+				self.logger.warning("Unsupported media for upload: path=%s ext=%s", local_path, ext)
+				return {"error": "unsupported_media", "path": local_path, "ext": ext}
+			# Ensure non-empty file
+			try:
+				if os.path.getsize(local_path) <= 0:
+					self.logger.warning("Media file is empty: %s", local_path)
+					return {"error": "empty_media", "path": local_path}
+			except OSError:
+				self.logger.warning("Media file missing or inaccessible: %s", local_path)
+				return {"error": "missing_media", "path": local_path}
+			text = self._caption_for_media(local_path, data_dir)
+			media_id = await self.video_uploader.upload_video(local_path)
+			resp = await self.create_tweet(text=text, media_ids=[media_id])
+			tweet_id = (resp.get("data") or {}).get("id") if isinstance(resp, dict) else None
 
-		# If tweet succeeded, try to delete remote file and local copy
-		self.mega.delete(node)
-		try:
-			os.remove(local_path)
-		except OSError:
-			pass
-
-		self.logger.info("Posted MEGA video and cleaned up: local=%s tweet_id=%s", local_path, (resp.get("data") or {}).get("id"))
+			# Record as posted only on successful tweet
+			success = bool(tweet_id) and not (isinstance(resp, dict) and resp.get("error"))
+			if not public_url and success:
+				# Prefer actual name from the downloaded node token; fallback to chosen name
+				_, actual_name = self._extract_handle_name(node)
+				self.db.mark_mega_posted(actual_name or chosen_name)
+				# Push updated posted.json back to MEGA folder and delete local copy
+				self.db.sync_to_mega(self.mega)
+		except Exception as e:
+			self.logger.warning("Posting flow failed; performing cleanup", exc_info=True)
+			resp = {"error": "post_flow_failed", "exception": str(e)}
+		finally:
+			# Always cleanup local video file if we downloaded it
+			try:
+				if local_path and os.path.isfile(local_path):
+					os.remove(local_path)
+			except OSError:
+				pass
+			self.logger.info("Posting flow finished: local=%s tweet_id=%s", local_path, tweet_id)
 		return resp
 
 

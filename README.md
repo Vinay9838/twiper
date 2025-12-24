@@ -5,7 +5,7 @@ Post tweets with text/images/videos from a local data folder or directly from yo
 - OAuth1-signed uploads to X (Twitter) v2 `POST /2/tweets`
 - Chunked video upload via `upload.twitter.com/1.1/media/upload`
 - MEGA integration to download the latest video from a specific folder, then (optionally) delete
-- SQLite de-duplication so the same MEGA video is not posted twice
+- JSON de-duplication so the same MEGA video name is not posted twice
 - Structured logging and a clean progress bar for MEGA downloads
 
 ## Requirements
@@ -24,10 +24,10 @@ Required for OAuth1 to X (Twitter): any of these aliases work.
   - `X_ACCESS_TOKEN` | `TWITTER_ACCESS_TOKEN`
   - `X_ACCESS_SECRET` | `TWITTER_ACCESS_SECRET`
 
-Optional:
+ Optional:
 - `X_USE_MEGA` (true/false)
 - `X_POST_LIMIT` (integer)
-- `DB_PATH` (SQLite path)
+- `JSON_DB_PATH` (path to local posted.json)
 - `LOG_LEVEL` (INFO/DEBUG)
 - MEGA: `MEGA_EMAIL`, `MEGA_PASSWORD`, `MEGA_DIR_NAME`, `MEGA_PUBLIC_URL`, `MEGA_HARD_DELETE`, `MEGA_PROGRESS_BAR`
 
@@ -71,8 +71,8 @@ MEGA_DIR_NAME=XYZBlob
 LOG_LEVEL=INFO
 MEGA_PROGRESS_BAR=1
 
-# Optional: SQLite DB location
-DB_PATH=data/twiper.db
+# Optional: JSON DB location (stores posted filenames)
+JSON_DB_PATH=data/posted.json
 
 # Optional: post limit for local data/ flow
 # X_POST_LIMIT=3
@@ -111,10 +111,10 @@ Troubleshooting deployed env:
 
 - MEGA flow:
   - Scans the `MEGA_DIR_NAME` folder (including subfolders) for videos.
-  - Picks the latest unposted by handle+name (checked in SQLite) and downloads it.
+  - Syncs `posted.json` from MEGA, then picks the latest unposted by filename and downloads it.
   - Uploads the video to X as a tweet with a caption sourced from:
     - `data/<basename>.txt`, or `data/caption.txt`, or the first `*.txt` in `data/`.
-  - On success, records the handle+name in the DB to avoid duplicates, and deletes the file from MEGA (soft or hard) and from `data/`.
+  - On success, records the filename in `posted.json`, pushes the updated JSON back to the MEGA folder, and deletes only the local downloaded file. Remote MEGA files are left intact.
 
 ## Run
 
@@ -147,18 +147,17 @@ python -m app.tweet_manager
 
 `data/.gitkeep` is tracked; everything else in `data/` is ignored by Git (see `.gitignore`).
 
-## De-duplication (SQLite)
+## De-duplication (JSON)
 
-- File: `data/twiper.db` (override via `DB_PATH`)
-- Table: `posted_media(source, handle, name, tweet_id, posted_at)` with a unique index on `(source, handle, name)`
-- MEGA selection uses newest-first order and skips entries already in the DB
-- After posting, the actual node handle+name from MEGA is recorded
+- File: `data/posted.json` (override via `JSON_DB_PATH`)
+- Format: JSON array of filenames (e.g., `["clip1.mp4", "clip2.mp4"]`)
+- On start of MEGA flow, the app tries to download `posted.json` from the configured MEGA folder.
+- After posting, the filename is appended locally and the JSON is uploaded back to the MEGA folder (replacing any existing remote file).
 
 ## Troubleshooting
 
 - MEGA import error on Python 3.12 with tenacity: ensure `tenacity>=8.2.3` (already in `requirements.txt`).
-- MEGA delete vs destroy:
-  - `delete` moves to trash. Set `MEGA_HARD_DELETE=true` to permanently remove via `destroy`.
+- MEGA files are no longer deleted automatically after posting.
 - Public URL mode cannot enumerate MEGA files; de-dup is skipped in that case.
 - Enable verbose logs:
 
@@ -171,7 +170,7 @@ export LOG_LEVEL=DEBUG
 - `app/tweet_manager.py` — Orchestrates posting, local and MEGA flows
 - `app/media_manager.py` — OAuth1-signed video upload (INIT/APPEND/FINALIZE/STATUS)
 - `app/mega_manager.py` — MEGA login/list/download/delete + progress bar
-- `app/db_manager.py` — SQLite wrapper for posted-media tracking
+- `app/json_db_manager.py` — JSON tracker for posted MEGA filenames
 - `requirements.txt` — Project dependencies
 - `.gitignore` — Ignore `data/*` except `data/.gitkeep`, plus common Python artifacts
 
