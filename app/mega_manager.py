@@ -163,16 +163,18 @@ class MegaManager:
 		# Delete existing remote files with same name under target folder (best-effort)
 		try:
 			dupes = self._list_nodes_in_folder_by_name(remote_name)
-			for nid, meta in dupes:
-				try:
-					session.delete(nid)
-					self.logger.info("Deleted duplicate remote file: %s (node_id=%s)", remote_name, nid)
-				except Exception:
+			if dupes:
+				self.logger.info("Found %d existing '%s' files in MEGA; cleaning up before upload", len(dupes), remote_name)
+				for nid, meta in dupes:
 					try:
 						session.destroy(nid)
-						self.logger.info("Destroyed duplicate remote file: %s (node_id=%s)", remote_name, nid)
+						self.logger.debug("Destroyed duplicate remote file: %s (node_id=%s)", remote_name, nid)
 					except Exception:
-						self.logger.debug("Failed to remove duplicate: node_id=%s", nid, exc_info=True)
+						try:
+							session.delete(nid)
+							self.logger.debug("Deleted duplicate remote file (trash): %s (node_id=%s)", remote_name, nid)
+						except Exception:
+							self.logger.debug("Failed to remove duplicate: node_id=%s", nid, exc_info=True)
 		except Exception:
 			self.logger.debug("Duplicate cleanup failed for %s", remote_name, exc_info=True)
 		# Upload
@@ -470,22 +472,22 @@ class MegaManager:
 			return
 
 		try:
-			if (os.getenv("MEGA_HARD_DELETE") or "0").lower() in {"1", "true", "yes"}:
-				self._session.destroy(node_id)
-				self.logger.info("Destroyed MEGA file (node_id=%s)", node_id)
-			else:
-				self._session.delete(node_id)
-				self.logger.info("Deleted MEGA file (node_id=%s)", node_id)
+			self._session.destroy(node_id)
+			self.logger.info("Destroyed MEGA file (node_id=%s)", node_id)
 			# Verify presence after operation
 			try:
 				files = self._session.get_files()
 				if isinstance(files, dict) and node_id in files:
-					self.logger.warning("MEGA node still present after delete: node_id=%s", node_id)
+					self.logger.warning("MEGA node still present after destroy: node_id=%s", node_id)
 			except Exception:
 				pass
 		except Exception:
-			# Swallow delete errors to avoid blocking post flow
-			self.logger.warning("Failed to delete MEGA node_id=%s", node_id, exc_info=True)
+			# Fallback to trash delete if hard delete fails
+			try:
+				self._session.delete(node_id)
+				self.logger.info("Deleted MEGA file (node_id=%s) [trash]", node_id)
+			except Exception:
+				self.logger.warning("Failed to delete/destroy MEGA node_id=%s", node_id, exc_info=True)
 
 	def _to_delete_token(self, node: Optional[object]) -> Optional[object]:
 		"""Return a deletion token for a node (prefer (handle, name) tuple)."""

@@ -4,6 +4,7 @@ import glob
 import os
 import logging
 import sys
+import random
 from typing import List, Optional
 
 from dotenv import load_dotenv
@@ -61,6 +62,9 @@ class XTweetManager:
 		self.db = JsonDBManager()
 		self.logger.debug("XTweetManager initialized")
 
+	def _get_http_timeout(self) -> aiohttp.ClientTimeout:
+		return aiohttp.ClientTimeout(total=600, connect=60, sock_connect=60, sock_read=120)
+
 	def sign_json(self, method: str, url: str) -> dict:
 		_, headers, _ = self.client.sign(uri=url, http_method=method)
 		headers["Content-Type"] = "application/json"
@@ -74,7 +78,7 @@ class XTweetManager:
 		if not os.path.isfile(path):
 			raise FileNotFoundError(path)
 
-		async with aiohttp.ClientSession() as session:
+		async with aiohttp.ClientSession(timeout=self._get_http_timeout()) as session:
 			form = aiohttp.FormData()
 			with open(path, "rb") as fh:
 				form.add_field("media", fh, filename=os.path.basename(path))
@@ -97,7 +101,7 @@ class XTweetManager:
 		if media_ids:
 			payload["media"] = {"media_ids": media_ids}
 
-		async with aiohttp.ClientSession() as session:
+		async with aiohttp.ClientSession(timeout=self._get_http_timeout()) as session:
 			self.logger.info(
 				"Creating tweet: text_len=%s media_count=%s",
 				(len(text) if text else 0),
@@ -262,47 +266,53 @@ class XTweetManager:
 
 		resp: dict = {}
 		tweet_id: Optional[str] = None
+		local_path = maybe_trim_video(local_path, max_seconds=140, logger=self.logger)
+		ext = os.path.splitext(local_path or "")[1].lower()
+		if not local_path or ext not in {".mp4"}:
+			self.logger.warning("Unsupported media for upload: path=%s ext=%s", local_path, ext)
+			return {"error": "unsupported_media", "path": local_path, "ext": ext}
 		try:
-			# Pre-process: trim to 2m20s if needed
-			local_path = maybe_trim_video(local_path, max_seconds=140, logger=self.logger)
-			# Validate media is a supported video before upload (avoid .json, etc.)
-			ext = os.path.splitext(local_path or "")[1].lower()
-			if not local_path or ext not in {".mp4"}:
-				self.logger.warning("Unsupported media for upload: path=%s ext=%s", local_path, ext)
-				return {"error": "unsupported_media", "path": local_path, "ext": ext}
-			# Ensure non-empty file
-			try:
-				if os.path.getsize(local_path) <= 0:
-					self.logger.warning("Media file is empty: %s", local_path)
-					return {"error": "empty_media", "path": local_path}
-			except OSError:
-				self.logger.warning("Media file missing or inaccessible: %s", local_path)
-				return {"error": "missing_media", "path": local_path}
-			text = self._caption_for_media(local_path, data_dir)
-			media_id = await self.video_uploader.upload_video(local_path)
-			resp = await self.create_tweet(text=text, media_ids=[media_id])
-			tweet_id = (resp.get("data") or {}).get("id") if isinstance(resp, dict) else None
+			if os.path.getsize(local_path) <= 0:
+				self.logger.warning("Media file is empty: %s", local_path)
+				return {"error": "empty_media", "path": local_path}
+		except OSError:
+			self.logger.warning("Media file missing or inaccessible: %s", local_path)
+			return {"error": "missing_media", "path": local_path}
 
-			# Record as posted only on successful tweet
-			success = bool(tweet_id) and not (isinstance(resp, dict) and resp.get("error"))
-			if not public_url and success:
-				# Prefer actual name from the downloaded node token; fallback to chosen name
-				_, actual_name = self._extract_handle_name(node)
-				self.db.mark_mega_posted(actual_name or chosen_name)
-				# Push updated posted.json back to MEGA folder and delete local copy
-				self.db.sync_to_mega(self.mega)
-		except Exception as e:
-			self.logger.warning("Posting flow failed; performing cleanup", exc_info=True)
-			resp = {"error": "post_flow_failed", "exception": str(e)}
-		finally:
-			# Always cleanup local video file if we downloaded it
+		text = self._caption_for_media(local_path, data_dir)
+		attempt = 0
+		while True:
+			attempt += 1
 			try:
-				if local_path and os.path.isfile(local_path):
-					os.remove(local_path)
-			except OSError:
-				pass
-			self.logger.info("Posting flow finished: local=%s tweet_id=%s", local_path, tweet_id)
-		return resp
+				media_id = await self.video_uploader.upload_video(local_path)
+				resp = await self.create_tweet(text=text, media_ids=[media_id])
+				tweet_id = (resp.get("data") or {}).get("id") if isinstance(resp, dict) else None
+				ok = bool(tweet_id) and not (isinstance(resp, dict) and resp.get("error"))
+				if ok:
+					self.logger.info("Tweet succeeded on attempt %d: id=%s", attempt, tweet_id)
+					break
+				raise RuntimeError(f"Tweet failed response: {resp}")
+			except Exception as e:
+				self.logger.warning("Attempt %d failed: %s", attempt, str(e), exc_info=True)
+				delay = min(5 * (2 ** (attempt - 1)), 60) + random.uniform(0, 0.5)
+				self.logger.info("Retrying in %.2fs (attempt=%d)", delay, attempt + 1)
+				await asyncio.sleep(delay)
+
+		if tweet_id and not public_url:
+			_, actual_name = self._extract_handle_name(node)
+			try:
+				self.db.mark_mega_posted(actual_name or chosen_name)
+				self.db.sync_to_mega(self.mega)
+			except Exception:
+				self.logger.warning("Failed to sync posted.json to MEGA after success", exc_info=True)
+
+		try:
+			if local_path and os.path.isfile(local_path):
+				os.remove(local_path)
+		except OSError:
+			pass
+		self.logger.info("Posting flow finished: local=%s tweet_id=%s attempts=%d", local_path, tweet_id, attempt)
+		return resp or {"data": {"id": tweet_id}}
 
 
 async def main():

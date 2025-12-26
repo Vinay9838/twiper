@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import os
 import logging
+import random
 from dotenv import load_dotenv
 from oauthlib.oauth1 import Client
 from urllib.parse import urlencode
@@ -33,6 +34,9 @@ class XVideoUploader:
         ]):
             raise RuntimeError("Missing OAuth credentials")
         self.logger.debug("Initialized XVideoUploader with OAuth credentials present")
+
+    def _get_http_timeout(self) -> aiohttp.ClientTimeout:
+        return aiohttp.ClientTimeout(total=600, connect=60, sock_connect=60, sock_read=120)
 
     # -------- OAuth signing helpers --------
 
@@ -69,7 +73,7 @@ class XVideoUploader:
         total_bytes = os.path.getsize(path)
         self.logger.info("Starting video upload: path=%s size=%d bytes", path, total_bytes)
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=self._get_http_timeout()) as session:
             # ----- INIT -----
             init_body = {
                 "command": "INIT",
@@ -107,12 +111,21 @@ class XVideoUploader:
                         content_type="application/octet-stream",
                     )
 
-                    async with session.post(
-                        UPLOAD_URL,
-                        data=form,
-                        headers=self.sign_multipart("POST"),
-                    ) as r:
-                        r.raise_for_status()
+                    append_attempt = 0
+                    while True:
+                        try:
+                            async with session.post(
+                                UPLOAD_URL,
+                                data=form,
+                                headers=self.sign_multipart("POST"),
+                            ) as r:
+                                r.raise_for_status()
+                            break
+                        except Exception as e:
+                            append_attempt += 1
+                            delay = min(5 * (2 ** (append_attempt - 1)), 60) + random.uniform(0, 0.5)
+                            self.logger.warning("APPEND retry #%d: media_id=%s segment=%d err=%s; sleeping %.2fs", append_attempt, media_id, segment_index, str(e), delay)
+                            await asyncio.sleep(delay)
                     self.logger.debug("APPEND ok: media_id=%s segment=%d bytes=%d", media_id, segment_index, len(chunk) if chunk else 0)
                     segment_index += 1
 
