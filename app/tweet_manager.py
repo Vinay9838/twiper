@@ -280,23 +280,21 @@ class XTweetManager:
 			return {"error": "missing_media", "path": local_path}
 
 		text = self._caption_for_media(local_path, data_dir)
-		attempt = 0
-		while True:
-			attempt += 1
-			try:
-				media_id = await self.video_uploader.upload_video(local_path)
-				resp = await self.create_tweet(text=text, media_ids=[media_id])
-				tweet_id = (resp.get("data") or {}).get("id") if isinstance(resp, dict) else None
-				ok = bool(tweet_id) and not (isinstance(resp, dict) and resp.get("error"))
-				if ok:
-					self.logger.info("Tweet succeeded on attempt %d: id=%s", attempt, tweet_id)
-					break
+		resp = {}
+		tweet_id = None
+		error: Exception | None = None
+		try:
+			media_id = await self.video_uploader.upload_video(local_path)
+			resp = await self.create_tweet(text=text, media_ids=[media_id])
+			tweet_id = (resp.get("data") or {}).get("id") if isinstance(resp, dict) else None
+			ok = bool(tweet_id) and not (isinstance(resp, dict) and resp.get("error"))
+			if ok:
+				self.logger.info("Tweet succeeded")
+			else:
 				raise RuntimeError(f"Tweet failed response: {resp}")
-			except Exception as e:
-				self.logger.warning("Attempt %d failed: %s", attempt, str(e), exc_info=True)
-				delay = min(5 * (2 ** (attempt - 1)), 60) + random.uniform(0, 0.5)
-				self.logger.info("Retrying in %.2fs (attempt=%d)", delay, attempt + 1)
-				await asyncio.sleep(delay)
+		except Exception as e:
+			self.logger.warning("Tweeting failed: %s", str(e), exc_info=True)
+			error = e
 
 		if tweet_id and not public_url:
 			_, actual_name = self._extract_handle_name(node)
@@ -311,7 +309,9 @@ class XTweetManager:
 				os.remove(local_path)
 		except OSError:
 			pass
-		self.logger.info("Posting flow finished: local=%s tweet_id=%s attempts=%d", local_path, tweet_id, attempt)
+		self.logger.info("Posting flow finished: local=%s tweet_id=%s", local_path, tweet_id)
+		if error:
+			raise error
 		return resp or {"data": {"id": tweet_id}}
 
 
