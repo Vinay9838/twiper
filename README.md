@@ -1,18 +1,18 @@
 # Twiper
 
-Post tweets with text/images/videos from a local data folder or directly from your MEGA account. Includes:
+Post tweets with text/images/videos from a local data folder or directly from your Google Drive folder (service account). Includes:
 
 - OAuth1-signed uploads to X (Twitter) v2 `POST /2/tweets`
 - Chunked video upload via `upload.twitter.com/1.1/media/upload`
-- MEGA integration to download the latest video from a specific folder, then (optionally) delete
-- JSON de-duplication so the same MEGA video name is not posted twice
-- Structured logging and a clean progress bar for MEGA downloads
+- Google Drive integration to download the latest video from a specific folder
+- Local JSON de-duplication so the same video name is not posted twice
+- Structured logging for downloads and posting
 
 ## Requirements
 
 - Python 3.10+
 - X (Twitter) developer app credentials
-- MEGA account (for MEGA flow)
+- Google Cloud service account with Drive API enabled (for Drive flow)
 
 ## Environment Variables
 
@@ -25,11 +25,10 @@ Required for OAuth1 to X (Twitter): any of these aliases work.
   - `X_ACCESS_SECRET` | `TWITTER_ACCESS_SECRET`
 
  Optional:
-- `X_USE_MEGA` (true/false)
+- `X_USE_GDRIVE` (true/false)
 - `X_POST_LIMIT` (integer)
-- `JSON_DB_PATH` (path to local posted.json)
 - `LOG_LEVEL` (INFO/DEBUG)
-- MEGA: `MEGA_EMAIL`, `MEGA_PASSWORD`, `MEGA_DIR_NAME`, `MEGA_PUBLIC_URL`, `MEGA_HARD_DELETE`, `MEGA_PROGRESS_BAR`
+- Google Drive: `GDRIVE_SERVICE_ACCOUNT_FILE` or `GDRIVE_SERVICE_ACCOUNT_JSON`, `GDRIVE_DIR_NAME`, `GDRIVE_FOLDER_ID`, `GDRIVE_DRIVE_ID`
 
 ## Setup
 
@@ -48,39 +47,37 @@ X_ACCESS_TOKEN=...
 X_ACCESS_SECRET=...
 ```
 
-Optional MEGA credentials and settings:
+Notes on the local JSON DB:
 
 ```
-# Enable MEGA posting mode
-X_USE_MEGA=true
+# Local de-dup DB path (fixed)
+# File is stored at app/storage-manager/db/posted.json
+```
 
-# MEGA auth (required unless using a public URL)
-MEGA_EMAIL=you@example.com
-MEGA_PASSWORD=your-password
+Optional Google Drive settings (service account):
 
-# Folder to scan (defaults to XYZBlob)
-MEGA_DIR_NAME=XYZBlob
+```
+# Enable Google Drive posting mode
+X_USE_GDRIVE=true
 
-# Optional: use a public URL instead of account login
-# MEGA_PUBLIC_URL=https://mega.nz/file/XXXXXXXX#YYYYYYYY
+# Service account credentials (one of):
+GDRIVE_SERVICE_ACCOUNT_FILE=/path/to/key.json
+# or inline JSON (not recommended for production):
+# GDRIVE_SERVICE_ACCOUNT_JSON={"type":"service_account", ...}
 
-# Optional: hard delete instead of moving to trash
-# MEGA_HARD_DELETE=true
+# Folder to scan (default XYZBlob). Use ID for faster lookup.
+GDRIVE_DIR_NAME=XYZBlob
+# If known, set explicit folder ID to avoid name search
+# GDRIVE_FOLDER_ID=1AbCdEfGhIjKlMnOp
 
-# Optional: log level and progress bar toggle
-LOG_LEVEL=INFO
-MEGA_PROGRESS_BAR=1
-
-# Optional: JSON DB location (stores posted filenames)
-JSON_DB_PATH=data/posted.json
-
-# Optional: post limit for local data/ flow
-# X_POST_LIMIT=3
+# Shared drive support (optional). If your folder lives in a shared drive,
+# set the drive ID to enable AllDrives operations.
+# GDRIVE_DRIVE_ID=0AHAbCdEfGhIjKlMnP
 ```
 
 ## Deployment (Fly.io + cron)
 
-This app runs a cron inside the container. Cron starts `run_job.sh`, which now sources the environment exported at container start.
+This app runs a cron inside the container. Cron starts `run_job.sh`, which sources the environment exported at container start.
 
 - Set secrets in Fly:
 
@@ -90,7 +87,9 @@ flyctl secrets set \
   X_API_SECRET=... \
   X_ACCESS_TOKEN=... \
   X_ACCESS_SECRET=... \
-  MEGA_EMAIL=... MEGA_PASSWORD=...
+  GDRIVE_SERVICE_ACCOUNT_JSON='{"type":"service_account", ... }' \
+  GDRIVE_FOLDER_ID=... \
+  X_USE_GDRIVE=true
 ```
 
 - Optional non-secret env in [env] of `fly.toml` (e.g., `LOG_LEVEL`, `X_POST_LIMIT`).
@@ -109,29 +108,30 @@ Troubleshooting deployed env:
   - Reads the first `*.txt` for tweet text (or `caption.txt`),
   - Posts first `*.mp4` (video) or up to 4 images, if present.
 
-- MEGA flow:
-  - Scans the `MEGA_DIR_NAME` folder (including subfolders) for videos.
-  - Syncs `posted.json` from MEGA, then picks the latest unposted by filename and downloads it.
+- Google Drive flow:
+  - Scans the configured Drive folder (including subfolders) for videos.
+  - Picks the latest unposted by filename (using local JSON de-dup) and downloads it.
   - Uploads the video to X as a tweet with a caption sourced from:
     - `data/<basename>.txt`, or `data/caption.txt`, or the first `*.txt` in `data/`.
-  - On success, records the filename in `posted.json`, pushes the updated JSON back to the MEGA folder, and deletes only the local downloaded file. Remote MEGA files are left intact.
+  - Records the filename in the local `posted.json` on success, and always deletes the local downloaded file after the attempt (success or failure).
+  - Drive files are not deleted or modified.
 
 ## Run
-
-- Post from MEGA (recommended):
-
-```bash
-. .venv/bin/activate
-export X_USE_MEGA=true
-python -m app.tweet_manager
-```
 
 - Post from local `data/` folder:
 
 ```bash
 . .venv/bin/activate
-export X_USE_MEGA=false
+export X_USE_GDRIVE=false
 export X_POST_LIMIT=2  # number of tweets to post in one run
+python -m app.tweet_manager
+```
+
+- Post from Google Drive:
+
+```bash
+. .venv/bin/activate
+export X_USE_GDRIVE=true
 python -m app.tweet_manager
 ```
 
@@ -149,16 +149,13 @@ python -m app.tweet_manager
 
 ## De-duplication (JSON)
 
-- File: `data/posted.json` (override via `JSON_DB_PATH`)
+- File: `app/storage-manager/db/posted.json` (fixed location)
 - Format: JSON array of filenames (e.g., `["clip1.mp4", "clip2.mp4"]`)
-- On start of MEGA flow, the app tries to download `posted.json` from the configured MEGA folder.
-- After posting, the filename is appended locally and the JSON is uploaded back to the MEGA folder (replacing any existing remote file).
+- The file is kept locally only; it is not synced to Google Drive.
 
 ## Troubleshooting
 
-- MEGA import error on Python 3.12 with tenacity: ensure `tenacity>=8.2.3` (already in `requirements.txt`).
-- MEGA files are no longer deleted automatically after posting.
-- Public URL mode cannot enumerate MEGA files; de-dup is skipped in that case.
+- For Google Drive, ensure the service account has access to the target folder (Shared Drive recommended for team setups). If using a personal My Drive, share the folder with the service account email.
 - Enable verbose logs:
 
 ```bash
@@ -167,10 +164,11 @@ export LOG_LEVEL=DEBUG
 
 ## Files
 
-- `app/tweet_manager.py` — Orchestrates posting, local and MEGA flows
+- `app/tweet_manager.py` — Orchestrates posting, local and Google Drive flows
 - `app/media_manager.py` — OAuth1-signed video upload (INIT/APPEND/FINALIZE/STATUS)
-- `app/mega_manager.py` — MEGA login/list/download/delete + progress bar
-- `app/json_db_manager.py` — JSON tracker for posted MEGA filenames
+- `app/mega_manager.py` — MEGA manager (present but not used by default)
+- `app/storage-manager/gdrive/gdrive_manager.py` — Google Drive list/upload/download/delete (service account)
+- `app/json_db_manager.py` — JSON tracker for posted filenames
 - `requirements.txt` — Project dependencies
 - `.gitignore` — Ignore `data/*` except `data/.gitkeep`, plus common Python artifacts
 

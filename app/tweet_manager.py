@@ -11,9 +11,10 @@ from dotenv import load_dotenv
 from oauthlib.oauth1 import Client
 
 from app.media_manager import XVideoUploader, UPLOAD_URL
-from app.mega_manager import MegaManager
 from app.json_db_manager import JsonDBManager
 from app.video_preprocessing import maybe_trim_video
+import importlib.util
+from pathlib import Path
 
 TWEETS_URL = "https://api.twitter.com/2/tweets"
 
@@ -57,9 +58,31 @@ class XTweetManager:
 		)
 
 		self.video_uploader = XVideoUploader()
-		self.mega = MegaManager()
-		# Use JSON-based tracker with default path (data/posted.json)
-		self.db = JsonDBManager()
+		self.drive = None
+
+		# Lazy-load DriveManager from file path to support hyphenated folder name
+		try:
+			use_gdrive = (os.getenv("X_USE_GDRIVE") or "").lower() in {"1", "true", "yes"}
+			if use_gdrive:
+				base = Path(__file__).parent
+				drive_path = base / "storage-manager" / "gdrive" / "gdrive_manager.py"
+				if drive_path.is_file():
+					spec = importlib.util.spec_from_file_location("app.storage_manager.gdrive.gdrive_manager", str(drive_path))
+					mod = importlib.util.module_from_spec(spec)
+					spec.loader.exec_module(mod)  # type: ignore
+					DM = getattr(mod, "DriveManager", None)
+					if DM:
+						self.drive = DM()
+						self.logger.info("DriveManager loaded from %s", drive_path)
+					else:
+						self.logger.warning("DriveManager class not found at %s", drive_path)
+				else:
+					self.logger.warning("DriveManager file not found at %s", drive_path)
+		except Exception:
+			self.logger.warning("Failed to initialize DriveManager", exc_info=True)
+		# Use JSON-based tracker stored in repo: app/storage-manager/db/posted.json
+		repo_db_path = Path(__file__).parent / "storage-manager" / "db" / "posted.json"
+		self.db = JsonDBManager(str(repo_db_path))
 		self.logger.debug("XTweetManager initialized")
 
 	def _get_http_timeout(self) -> aiohttp.ClientTimeout:
@@ -228,41 +251,36 @@ class XTweetManager:
 
 		return responses
 
-	async def post_video_from_mega(self, data_dir: str = "data") -> dict:
-		"""Download a video from MEGA, tweet it with caption, then cleanup local file regardless of success."""
-		public_url = os.getenv("MEGA_PUBLIC_URL")
-		file_name = os.getenv("MEGA_FILE_NAME")
-		local_path: Optional[str] = None
-		node = None
-		# If MEGA_PUBLIC_URL provided, bypass DB uniqueness (we cannot enumerate)
-		if public_url:
-			local_path, node = self.mega.download_video(dest_dir=data_dir, file_name=None, public_url=public_url)
-			chosen_handle, chosen_name = None, None
-		else:
-			# Ensure we have the latest posted list from MEGA
-			try:
-				self.db.sync_from_mega(self.mega)
-			except Exception:
-				self.logger.warning("Failed to sync posted.json from MEGA; continuing with local state", exc_info=True)
+	async def post_video_from_gdrive(self, data_dir: str = "data") -> dict:
+		"""Download a video from Google Drive, tweet it, then cleanup local file regardless of success."""
+		if not self.drive:
+			raise RuntimeError("Google Drive not configured. Set X_USE_GDRIVE=true and ensure OAuth/Service Account is set.")
 
-			# Choose latest unposted video by filename from the configured MEGA folder
-			# Limit candidate enumeration to reduce memory; configurable via env
-			limit_env = os.getenv("X_MEGA_LIST_LIMIT") or os.getenv("MEGA_LIST_LIMIT")
-			try:
-				list_limit = int(limit_env) if limit_env else 50
-			except ValueError:
-				list_limit = 50
-			candidates = self.mega.list_recent_videos(limit=list_limit)
-			chosen = None
-			for handle, name, ts in candidates:
-				if not self.db.is_mega_posted(name):
-					chosen = (handle, name, ts)
-					break
-			if not chosen:
-				raise RuntimeError("No unique MEGA video available to post (all candidates already posted)")
-			chosen_handle, chosen_name, _ = chosen
-			self.logger.info("Selected MEGA video: handle=%s name=%s", chosen_handle, chosen_name)
-			local_path, node = self.mega.download_video(dest_dir=data_dir, file_name=chosen_name, public_url=None)
+		local_path: Optional[str] = None
+		chosen_name: Optional[str] = None
+		# posted.json is local-only now; no Drive sync
+
+		# Choose latest unposted video by filename from Drive folder using metadata-only listing
+		posted_count = self.db.count_posted()
+		candidates = self.drive.list_recent_videos(limit=None)
+		all_count = len(candidates)
+		self.logger.info("Scanning Drive: total_videos=%d posted_count=%d", all_count, posted_count)
+
+		chosen = None
+		for handle, name, ts in candidates:
+			if not self.db.is_posted(name):
+				chosen = (handle, name, ts)
+				break
+
+		if not chosen:
+			if posted_count >= all_count:
+				raise RuntimeError("No unique Drive video available to post (all candidates already posted)")
+			self.logger.warning("Unposted video exists but not found; check name matching and posted.json sync.")
+			raise RuntimeError("No unique Drive video found due to name mismatch or sync issues")
+
+		chosen_handle, chosen_name, _ = chosen
+		self.logger.info("Selected Drive video: id=%s name=%s", chosen_handle, chosen_name)
+		local_path = self.drive._download_file_by_id(chosen_handle, chosen_name, data_dir)
 
 		resp: dict = {}
 		tweet_id: Optional[str] = None
@@ -296,14 +314,14 @@ class XTweetManager:
 			self.logger.warning("Tweeting failed: %s", str(e), exc_info=True)
 			error = e
 
-		if tweet_id and not public_url:
-			_, actual_name = self._extract_handle_name(node)
+		if tweet_id:
+			# Record locally to avoid re-posting; do NOT upload or delete from Drive
 			try:
-				self.db.mark_mega_posted(actual_name or chosen_name)
-				self.db.sync_to_mega(self.mega)
+				self.db.mark_posted(chosen_name)
 			except Exception:
-				self.logger.warning("Failed to sync posted.json to MEGA after success", exc_info=True)
+				self.logger.debug("Failed to mark local posted.json", exc_info=True)
 
+		# Always delete local file regardless of tweet success/failure
 		try:
 			if local_path and os.path.isfile(local_path):
 				os.remove(local_path)
@@ -330,9 +348,9 @@ async def main():
 		limit = 1
 	limit = max(1, limit)
 
-	use_mega = (os.getenv("X_USE_MEGA") or "").lower() in {"1", "true", "yes"}
-	if use_mega:
-		result = await manager.post_video_from_mega("data")
+	use_gdrive = (os.getenv("X_USE_GDRIVE") or "").lower() in {"1", "true", "yes"}
+	if use_gdrive:
+		result = await manager.post_video_from_gdrive("data")
 		print(result)
 	else:
 		results = await manager.post_multiple_from_dir("data", limit=limit)

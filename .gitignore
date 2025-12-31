@@ -13,3 +13,6 @@ venv/
 # Data directory: ignore everything except the keep file
 data/*
 !data/.gitkeep
+
+# Google Drive service account credentials (local only, do not commit)
+app/storage-manager/gdrive/twiper-service-account.json
