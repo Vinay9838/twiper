@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Backup posted.json from the running Fly app into the local repo
+# Backup posted.json from the running Fly app into the local repo using project root
 APP_NAME="twiper"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REMOTE_PATH="/appsrc/app/storage-manager/db"
-LOCAL_DIR="app/storage-manager/db"
+LOCAL_DIR="$ROOT_DIR/app/storage-manager/db"
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 BACKUP_FILE="posted.json.${TIMESTAMP}"
 
