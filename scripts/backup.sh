@@ -25,19 +25,22 @@ fi
 
 echo "Fetching posted.json from app '$APP_NAME'..."
 
-# If there's an existing posted.json, archive it with a timestamped suffix
-if [ -f "$LOCAL_DIR/posted.json" ]; then
-  mv "$LOCAL_DIR/posted.json" "$LOCAL_DIR/posted.json.$TIMESTAMP"
-  echo "Archived existing posted.json -> $LOCAL_DIR/posted.json.$TIMESTAMP"
-fi
+# Download into a temporary file, validate it, then atomically move into place
+TMP_FILE="$LOCAL_DIR/posted.json.tmp.$TIMESTAMP.$$"
+# Ensure temporary file is removed on exit if something goes wrong
+trap 'rm -f "$TMP_FILE"' EXIT
 
-# Download posted.json directly into the canonical filename (no timestamp)
-fly ssh sftp --app "$APP_NAME" get "$REMOTE_PATH/posted.json" "$LOCAL_DIR/posted.json"
+fly ssh sftp --app "$APP_NAME" get "$REMOTE_PATH/posted.json" "$TMP_FILE"
 
 # Basic sanity check: ensure the downloaded file is non-empty
-if [ ! -s "$LOCAL_DIR/posted.json" ]; then
+if [ ! -s "$TMP_FILE" ]; then
   echo "Error: downloaded posted.json is empty or missing" >&2
   exit 2
 fi
+
+# Atomically replace the canonical file
+mv "$TMP_FILE" "$LOCAL_DIR/posted.json"
+# Cancel the trap since file has been moved successfully
+trap - EXIT
 
 echo "Saved: $LOCAL_DIR/posted.json"
