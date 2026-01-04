@@ -10,8 +10,8 @@ if ! command -v fly &>/dev/null; then
   exit 1
 fi
 
-echo "Running backup: $SCRIPT_DIR/fly_backup_posted.sh"
-"$SCRIPT_DIR/fly_backup_posted.sh"
+echo "Running backup: $SCRIPT_DIR/backup.sh"
+"$SCRIPT_DIR/backup.sh"
 
 echo "Deploying to Fly (app: $APP_NAME)..."
 # Pass through any extra args to fly deploy
