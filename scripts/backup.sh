@@ -40,7 +40,11 @@ fi
 
 # Atomically replace the canonical file
 mv "$TMP_FILE" "$LOCAL_DIR/posted.json"
-# Cancel the trap since file has been moved successfully
+# Explicitly remove the temporary file path if it still exists (defensive)
+if [ -e "$TMP_FILE" ]; then
+  rm -f "$TMP_FILE"
+fi
+# Cancel the trap since file has been moved/cleaned successfully
 trap - EXIT
 
 echo "Saved: $LOCAL_DIR/posted.json"
