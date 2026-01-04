@@ -25,11 +25,19 @@ fi
 
 echo "Fetching posted.json from app '$APP_NAME'..."
 
-# Download posted.json directly using the SFTP 'get' subcommand (no interactive shell)
-fly ssh sftp --app "$APP_NAME" get "$REMOTE_PATH/posted.json" "$LOCAL_DIR/$BACKUP_FILE"
+# If there's an existing posted.json, archive it with a timestamped suffix
+if [ -f "$LOCAL_DIR/posted.json" ]; then
+  mv "$LOCAL_DIR/posted.json" "$LOCAL_DIR/posted.json.$TIMESTAMP"
+  echo "Archived existing posted.json -> $LOCAL_DIR/posted.json.$TIMESTAMP"
+fi
 
-# Also update the unversioned posted.json (overwrite) for convenience
-cp -f "$LOCAL_DIR/$BACKUP_FILE" "$LOCAL_DIR/posted.json"
+# Download posted.json directly into the canonical filename (no timestamp)
+fly ssh sftp --app "$APP_NAME" get "$REMOTE_PATH/posted.json" "$LOCAL_DIR/posted.json"
 
-echo "Saved: $LOCAL_DIR/$BACKUP_FILE"
-echo "Updated: $LOCAL_DIR/posted.json"
+# Basic sanity check: ensure the downloaded file is non-empty
+if [ ! -s "$LOCAL_DIR/posted.json" ]; then
+  echo "Error: downloaded posted.json is empty or missing" >&2
+  exit 2
+fi
+
+echo "Saved: $LOCAL_DIR/posted.json"
