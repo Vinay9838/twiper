@@ -92,6 +92,20 @@ flyctl secrets set \
   X_USE_GDRIVE=true
 ```
 
+### Deployment helper (Makefile) ✅
+
+There is a `Makefile` with a `deploy` target that runs a backup of `posted.json` from the running Fly app before calling `fly deploy`.
+
+Usage:
+
+```bash
+# Backup only
+make backup
+
+# Backup then deploy (forward extra flags to fly deploy after --)
+make deploy -- --remote-only
+```
+
 - Optional non-secret env in [env] of `fly.toml` (e.g., `LOG_LEVEL`, `X_POST_LIMIT`).
 - The entrypoint writes all env to `/etc/profile.d/container_env.sh` and `run_job.sh` sources it so jobs see secrets.
 - If you prefer, you can also define variables directly in `crontab` above the schedule lines (e.g., `X_POST_LIMIT=2`).
