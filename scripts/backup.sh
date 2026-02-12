@@ -48,3 +48,23 @@ fi
 trap - EXIT
 
 echo "Saved: $LOCAL_DIR/posted.json"
+
+# Show number of entries using JsonDBManager from app/json_db_manager.py
+if command -v python3 >/dev/null 2>&1; then
+  COUNT=$(PYTHONPATH="$ROOT_DIR" python3 - <<PY
+from app.json_db_manager import JsonDBManager
+from pathlib import Path
+import sys
+
+p = Path("$LOCAL_DIR") / "posted.json"
+try:
+    db = JsonDBManager(str(p))
+    print(db.count_posted())
+except Exception:
+    sys.exit(2)
+PY
+  ) || COUNT="?"
+  echo "posted.json contains: $COUNT entries"
+else
+  echo "python3 not found; cannot show posted.json count"
+fi
